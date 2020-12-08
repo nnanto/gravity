@@ -1,10 +1,29 @@
 package treap
 
+import "sync"
+
 const initG = -1
+
+type nodePool struct {
+	sync.Pool
+}
+
+// holds treapNode objects for reuse
+var NodePool = &nodePool{Pool: sync.Pool{
+	New: func() interface{} { return new(Node) },
+}}
+
+func (p *nodePool) Get() *Node {
+	return p.Pool.Get().(*Node)
+}
+
+func (p *nodePool) Put(n *Node) {
+	n.Cleanup()
+	p.Pool.Put(n)
+}
 
 type Node struct {
 	Fs *FreeSpace
-	//Score       float64
 
 	left, right *Node
 	prev, next  *Node

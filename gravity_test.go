@@ -13,12 +13,17 @@ import (
 	"time"
 )
 
+// memoize random bytes of specified size
+var rbytemem = make(map[int][]byte)
+// lock on the rbytemem
+var mu sync.RWMutex
+
 func TestGravity_RWF(t *testing.T) {
 	t.Run("ReadWrite Single", func(t *testing.T) {
 		g, _ := NewGravity(make([]byte, 100))
 		str := "hello"
 
-		pos, err := g.Write(([]byte)(str))
+		pos, err := g.Write([]byte(str))
 		require.NoError(t, err)
 
 		data, err := g.Read(pos)
@@ -36,12 +41,11 @@ func TestGravity_RWF(t *testing.T) {
 		}, twrites)
 
 		for i := 0; i < twrites; i++ {
-			data := ([]byte)(str + string(rune(i)))
+			data := []byte(str + string(rune(i)))
 			pos, err := g.Write(data)
 			require.NoError(t, err)
 			writeResult[i].pos = pos
 			writeResult[i].data = data
-
 		}
 
 		for _, wr := range writeResult {
@@ -55,7 +59,7 @@ func TestGravity_RWF(t *testing.T) {
 		g, _ := NewGravity(make([]byte, 5000))
 		initsize := g.TotalFreeSpace()
 
-		pos, err := g.Write(([]byte)("hello"))
+		pos, err := g.Write([]byte("hello"))
 		require.NoError(t, err)
 
 		err = g.Free(pos)
@@ -72,7 +76,7 @@ func TestGravity_RWF(t *testing.T) {
 			for i, msg := range msgs {
 				p, e := g.Write([]byte(msg))
 				if e != nil {
-					t.Fatalf("Error while adding (%vmap-%vmap): %vmap\n", tt, i, e)
+					t.Fatalf("Error while adding (%v-%v): %v\n", tt, i, e)
 				}
 				require.NoError(t, e)
 				if i%5 == 0 || i%7 == 0 {
@@ -87,11 +91,31 @@ func TestGravity_RWF(t *testing.T) {
 
 }
 
+func TestGravity_WriteWithKey(t *testing.T) {
+	g, _ := NewGravity(make([]byte, 100))
+	str := "hello"
+	k := uint64(3123)
+	err := g.WriteWithKey(k, []byte(str))
+	require.NoError(t, err)
+
+	data, err := g.Read(k)
+	require.NoError(t, err)
+	require.Equal(t, str, string(data))
+
+	str = "world"
+	err = g.WriteWithKey(k, []byte(str))
+	require.NoError(t, err)
+
+	data, err = g.Read(k)
+	require.NoError(t, err)
+	require.Equal(t, str, string(data))
+}
+
 func TestGravity_VPos(t *testing.T) {
 	inp := strings.Split("hello from the other side", " ")
 	totalSpaceRequired := uint64(0)
 	for _, s := range inp {
-		totalSpaceRequired += uint64(len([]byte(s))) + HeaderLen + KeyLen
+		totalSpaceRequired += uint64(len([]byte(s))) + headerLen + keyLen
 	}
 	g, _ := NewGravity(make([]byte, totalSpaceRequired))
 	var positions []uint64
@@ -132,15 +156,16 @@ func TestGravity_ExpandBasic(t *testing.T) {
 		insertionString += inp[p]
 	}
 	// add extra string to compensate for the header and keylength
-	remainingSize := int(g.TotalFreeSpace()) - len(insertionString) - int(HeaderLen) - int(KeyLen)
-	insertionString += string(make([]byte, remainingSize))
+	remainingSize := int(g.TotalFreeSpace()) - len(insertionString) - int(headerLen) - int(keyLen)
+	insertionString += string(randBytes(remainingSize))
 
 	// Try inserting data of size equal to removed size (exclude header)
 	p, err := g.Write([]byte(insertionString))
 	require.NoError(t, err)
+	require.Equal(t, uint64(0), g.TotalFreeSpace())
 
 	// Try reading the newly inserted data
-	t.Logf("Reading items from removable list at pos: %vmap\n", p)
+	t.Logf("Reading items from removable list at pos: %v\n", p)
 	d, err := g.Read(p)
 	require.NoError(t, err)
 	require.Equal(t, []byte(insertionString), d)
@@ -153,7 +178,7 @@ posloop:
 				continue posloop
 			}
 		}
-		t.Logf("Reading item:%vmap at pos: %vmap \n", i, position)
+		t.Logf("Reading item:%v at pos: %v \n", i, position)
 		d, err := g.Read(position)
 		require.NoError(t, err)
 		require.Equal(t, []byte(inp[i]), d)
@@ -169,14 +194,16 @@ func TestGravity_ExpandMove(t *testing.T) {
 		require.NoError(t, err)
 		positions = append(positions, p)
 	}
-
+	// freeing "my" of size 2
 	require.NoError(t, g.Free(positions[1]))
+
 	newData := []byte("four")
 	p, err := g.Write(newData)
 	require.NoError(t, err)
 	d, err := g.Read(p)
 	require.NoError(t, err)
 	require.Equal(t, newData, d)
+	require.Equal(t, uint64(0), g.TotalFreeSpace())
 }
 
 func TestGravity_SimpleRWParallel(t *testing.T) {
@@ -236,7 +263,7 @@ func TestGravity_WriteFreeParallel(t *testing.T) {
 	memSize := 160000
 	g, _ := NewGravity(make([]byte, memSize))
 	size := uint64(84) // so that each data block will be of size 100 (84 + 8 (headerLen) + 8 (keyLen))
-	elementCount := memSize / int(size+HeaderLen+KeyLen)
+	elementCount := memSize / int(size+headerLen+keyLen)
 	itemsToWrite := uint64(elementCount)
 	el := sync.NewCond(&emptyLock{})
 
@@ -290,7 +317,7 @@ func TestGravity_WriteFreeParallel(t *testing.T) {
 				}
 
 				// Write a new block for every 200th data. At this point we should potentially have multiple
-				// freespaces extracted from pool i.e, inUseFsCount could be > 0
+				// freespaces extracted from pool i.e, extractedFreeSpaces could be > 0
 				if k%200 == 0 {
 					atomic.AddUint64(&itemsToWrite, 1)
 					w <- randBytes(int(size))
@@ -321,7 +348,7 @@ func TestGravity_ReadExpandParallel(t *testing.T) {
 	memSize := 160000
 	g, _ := NewGravity(make([]byte, memSize))
 	size := uint64(84)
-	elementCount := memSize / int(size+HeaderLen+KeyLen)
+	elementCount := memSize / int(size+headerLen+keyLen)
 
 	holes := 0
 	var holePositions []uint64
@@ -347,7 +374,7 @@ func TestGravity_ReadExpandParallel(t *testing.T) {
 	}
 
 	// create data twice the size and fill all the holes
-	largeDataLength := (int(size) << 1) + int(HeaderLen+KeyLen)
+	largeDataLength := (int(size) << 1) + int(headerLen+keyLen)
 	// Since the data is twice the size, we need to iterate half the holes
 	h2 := holes >> 1
 
@@ -386,9 +413,6 @@ func TestGravity_ReadExpandParallel(t *testing.T) {
 	require.Equal(t, uint64(0), g.TotalFreeSpace())
 }
 
-var rbytemem = make(map[int][]byte)
-var mu sync.RWMutex
-
 func randBytes(n int) []byte {
 	mu.Lock()
 	defer mu.Unlock()
@@ -404,7 +428,7 @@ func randBytes(n int) []byte {
 func getGravity(inp []string) *Gravity {
 	totalSpaceRequired := uint64(0)
 	for _, s := range inp {
-		totalSpaceRequired += uint64(len([]byte(s))) + HeaderLen + KeyLen
+		totalSpaceRequired += uint64(len([]byte(s))) + headerLen + keyLen
 	}
 	g, _ := NewGravity(make([]byte, totalSpaceRequired+2))
 	return g
@@ -433,7 +457,7 @@ func BenchmarkGravity_Write(b *testing.B) {
 			}
 
 			g, _ := NewGravity(make([]byte, s))
-			elementCount := b.N / int(size+HeaderLen+KeyLen)
+			elementCount := b.N / int(size+headerLen+keyLen)
 
 			b.ResetTimer()
 			for i := 0; i < elementCount; i++ {
@@ -468,7 +492,7 @@ func BenchmarkGravity_Free(b *testing.B) {
 	b.Logf("MMAP Allocation: %s\n", humanize.IBytes(uint64(memSize)))
 	g, _ := NewGravity(make([]byte, memSize))
 	size := uint64(64)
-	elementCount := memSize / int(size+HeaderLen+KeyLen)
+	elementCount := memSize / int(size+headerLen+keyLen)
 	itemsWritten := elementCount
 	var holePositions []uint64
 	for elementCount > 0 {
@@ -482,7 +506,7 @@ func BenchmarkGravity_Free(b *testing.B) {
 
 		elementCount--
 	}
-	fmt.Printf("Written #%vmap data of size:%vmap to memsize:%vmap\n", itemsWritten, size, memSize)
+	fmt.Printf("Written #%v data of size:%v to memsize:%v\n", itemsWritten, size, memSize)
 	b.ResetTimer()
 	for i := range holePositions {
 		g.Free(holePositions[i])
@@ -497,7 +521,7 @@ func BenchmarkGravity_WriteWithFree(b *testing.B) {
 	b.Logf("MMAP Allocation: %s\n", humanize.IBytes(uint64(memSize)))
 	g, _ := NewGravity(make([]byte, memSize))
 	size := uint64(64)
-	elementCount := memSize / int(size+HeaderLen+KeyLen)
+	elementCount := memSize / int(size+headerLen+keyLen)
 	b.ResetTimer()
 	for elementCount > 0 {
 		// write data
@@ -521,7 +545,7 @@ func BenchmarkGravity_Expand(b *testing.B) {
 	b.Logf("MMAP Allocation: %s\n", humanize.IBytes(uint64(memSize)))
 	g, _ := NewGravity(make([]byte, memSize))
 	size := uint64(84)
-	elementCount := memSize / int(size+HeaderLen+KeyLen)
+	elementCount := memSize / int(size+headerLen+keyLen)
 	var positions []uint64
 	var holePositions []uint64
 	for elementCount > 0 {
@@ -542,10 +566,10 @@ func BenchmarkGravity_Expand(b *testing.B) {
 		g.Free(hp)
 	}
 	// create data twice the size and fill all the holes
-	largeDataLength := (int(size) * 2) + int(HeaderLen+KeyLen)
+	largeDataLength := (int(size) * 2) + int(headerLen+keyLen)
 	// Since the data is twice the size, we need to iterate half the holes
 	h2 := len(holePositions) / 2
-	//b.Logf("h2 : %vmap, holes: %vmap, elements: %vmap\n", h2, holes, memSize / int(size+HeaderLen+KeyLen))
+	//b.Logf("h2 : %v, holes: %v, elements: %v\n", h2, holes, memSize / int(size+headerLen+keyLen))
 	b.ResetTimer()
 	wc := writer(g, h2)
 	//totalItems := int32(h2)
@@ -567,7 +591,7 @@ func writer(g *Gravity, maxCount int) chan []byte {
 				}
 				_, err := g.Write(d)
 				if err != nil {
-					fmt.Printf("err: %vmap\n", err)
+					fmt.Printf("err: %v\n", err)
 				}
 				if atomic.AddUint64(&taskCount, 1) == uint64(maxCount-1) {
 					go close(ch)

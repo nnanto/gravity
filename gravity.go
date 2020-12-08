@@ -4,14 +4,13 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"log"
 	"ohalloc/treap"
 	"sync"
 	"sync/atomic"
 )
 
 type Gravity struct {
-	sync.RWMutex
+	rwm  sync.RWMutex
 	mem  []byte            // Entire mem in bytes
 	fsm  *freeSpaceManager // Manages the free space
 	size uint64            // Total size of memory (same as len(mem))
@@ -20,29 +19,20 @@ type Gravity struct {
 }
 
 const (
-	HeaderLen = uint64(8) // length of header to store the size of data
-	KeyLen    = uint64(8) // Size of key for the data
+	headerLen = uint64(8) // length of header to store the size of data
+	keyLen    = uint64(8) // Size of key for the data
 )
 
 var (
-	WrongReadPosition = errors.New("wrong read position index")
+	WrongReadPosition = errors.New("wrong read position")
 )
-
-const Debug = false
-
-func logf(format string, args ...interface{}) {
-	if Debug {
-		log.Printf(format, args...)
-	}
-}
 
 func NewGravity(mem []byte) (*Gravity, error) {
 	size := uint64(len(mem))
-	if size <= HeaderLen+KeyLen {
+	if size <= headerLen+keyLen {
 		return nil, errors.New("input byte too small")
 	}
 
-	//mmap := offheap.Malloc(int64(size), "")
 	g := &Gravity{
 		mem:  mem,
 		fsm:  newFSM(),
@@ -59,18 +49,27 @@ func (g *Gravity) getKey() uint64 {
 	return atomic.AddUint64(&g.key, 1)
 }
 
-// Writes data to the memory and returns a key.
+// Write adds data to the memory and returns a key.
 // The key acts as a reference to read the data
 func (g *Gravity) Write(data []byte) (key uint64, err error) {
 	key = g.getKey()
-	err = g.write(data, key)
+	err = g.write(key, data)
 	return
 }
 
-func (g *Gravity) write(data []byte, k uint64) error {
+// WriteWithKey writes data to the memory and associates the key to it.
+// The data can be read back by passing key to Read function
+func (g *Gravity) WriteWithKey(key uint64, data []byte) error {
+	// clear any key that is already present
+	_ = g.Free(key)
+	return g.write(key, data)
+}
+
+func (g *Gravity) write(k uint64, data []byte) error {
+
 	// get data size
 	dl := uint64(len(data))
-	totalLen := HeaderLen + KeyLen + dl
+	totalLen := headerLen + keyLen + dl
 
 	// try to fetch freespace for size
 	fss, err := g.fsm.poolExtract(totalLen)
@@ -80,13 +79,12 @@ func (g *Gravity) write(data []byte, k uint64) error {
 
 	// merge all freespaces to satisfy the data size
 	fs := g.merge(fss)
-	logf("Trying to write into fs: %vmap\n", fs)
 
 	// remember to put the freespace back to the pool
 	defer func() {
 		err := g.fsm.poolPut(fs)
-		if err != nil {
-			logf("Error while adding to pool: %vmap\n", err)
+		if err == illegalPoolPut {
+			panic(fmt.Sprintf("Error while adding to pool: %v \n", err))
 		}
 	}()
 
@@ -96,7 +94,6 @@ func (g *Gravity) write(data []byte, k uint64) error {
 	if err != nil {
 		return err
 	}
-	logf("Written into pos: %vmap\n", npos)
 
 	// store virtual position
 	g.vmap.store(k, npos)
@@ -107,39 +104,39 @@ func (g *Gravity) write(data []byte, k uint64) error {
 
 // Reads the value stored in the position corresponding to the key
 func (g *Gravity) Read(key uint64) ([]byte, error) {
-	g.RLock()
-	defer g.RUnlock()
+	g.rwm.RLock()
+	defer g.rwm.RUnlock()
 	pos, err := g.loadFromVPos(key)
 	if err != nil {
 		return nil, err
 	}
 	if pos >= g.size {
-		return nil, errors.New("out of bound")
+		return nil, WrongReadPosition
 	}
-	dl := binary.LittleEndian.Uint64(g.mem[pos : pos+HeaderLen])
-	pos += HeaderLen + KeyLen
+	dl := binary.LittleEndian.Uint64(g.mem[pos : pos+headerLen])
+	pos += headerLen + keyLen
 	b := make([]byte, dl)
 	n := copy(b, g.mem[pos:pos+dl])
 	if n != int(dl) {
-		return nil, errors.New(fmt.Sprintf("expected to write %vmap but wrote %vmap", dl, n))
+		return nil, errors.New(fmt.Sprintf("expected to write %v but wrote %v ", dl, n))
 	}
 	return b, nil
 }
 
 // Frees the memory held by the data pointed by key
 func (g *Gravity) Free(key uint64) error {
-	g.RLock()
+	g.rwm.RLock()
 
 	pos, err := g.loadAndDeleteFromVPos(key)
 	if err != nil {
-		g.RUnlock()
+		g.rwm.RUnlock()
 		return err
 	}
 
-	dl := binary.LittleEndian.Uint64(g.mem[pos : pos+HeaderLen])
-	g.RUnlock()
+	dl := binary.LittleEndian.Uint64(g.mem[pos : pos+headerLen])
+	g.rwm.RUnlock()
 
-	totalDataSize := HeaderLen + KeyLen + uint64(dl)
+	totalDataSize := headerLen + keyLen + dl
 	return g.fsm.add(&treap.FreeSpace{Start: pos, End: pos + totalDataSize - 1})
 }
 
@@ -148,11 +145,12 @@ func (g *Gravity) TotalFreeSpace() uint64 {
 	return g.fsm.totalFreeSpaceSize()
 }
 
-// merge joins multiple freespaces to form a single large free space.
-// During the process, data is moved around and vmap is updated.
+// merge joins multiple freespaces to form a single large free space. i.e, all freespaces shifted to the right
+// by moving the data to the left
 func (g *Gravity) merge(fss []*treap.FreeSpace) *treap.FreeSpace {
-	g.Lock()
-	defer g.Unlock()
+	// obtain lock as data is moved and vmap is updated
+	g.rwm.Lock()
+	defer g.rwm.Unlock()
 	for i := 0; i < len(fss)-1; i++ {
 		fs := fss[i]
 		nfs := fss[i+1]
@@ -170,13 +168,13 @@ func (g *Gravity) merge(fss []*treap.FreeSpace) *treap.FreeSpace {
 // Writes the data at given position and returns the key
 func (g *Gravity) writeAt(pos uint64, data []byte, k uint64) error {
 	dl := uint64(len(data))
-	binary.LittleEndian.PutUint64(g.mem[pos:pos+HeaderLen], dl)
-	pos += HeaderLen
-	binary.LittleEndian.PutUint64(g.mem[pos:pos+KeyLen], uint64(k))
-	pos += KeyLen
-	n := copy(g.mem[pos:pos+uint64(dl)], data)
+	binary.LittleEndian.PutUint64(g.mem[pos:pos+headerLen], dl)
+	pos += headerLen
+	binary.LittleEndian.PutUint64(g.mem[pos:pos+keyLen], k)
+	pos += keyLen
+	n := copy(g.mem[pos:pos+dl], data)
 	if n != len(data) {
-		return errors.New(fmt.Sprintf("expected to write %vmap but wrote %vmap", dl, n))
+		return errors.New(fmt.Sprintf("expected to write %v  but wrote %v ", dl, n))
 	}
 	return nil
 }
@@ -188,16 +186,17 @@ func (g *Gravity) readAndShift(srcStart uint64, srcEnd uint64, dstStart uint64, 
 	start := srcStart
 
 	for start < srcEnd {
-		if start+HeaderLen+KeyLen > g.size {
+		if start+headerLen+keyLen > g.size {
 			panic("Trying to move src beyond size")
 		}
-		dl := binary.LittleEndian.Uint64(g.mem[start : start+HeaderLen])
+		dl := binary.LittleEndian.Uint64(g.mem[start : start+headerLen])
 		// rewire key position
-		key := binary.LittleEndian.Uint64(g.mem[start+HeaderLen : start+HeaderLen+KeyLen])
-		g.vmap.store(uint64(key), dstStart+runningDataLength)
+		key := binary.LittleEndian.Uint64(g.mem[start+headerLen : start+headerLen+keyLen])
+		g.vmap.store(key, dstStart+runningDataLength)
 
-		runningDataLength += uint64(dl) + HeaderLen + KeyLen
-		start += uint64(dl) + HeaderLen + KeyLen
+		currentLen := dl + headerLen + keyLen
+		runningDataLength += currentLen
+		start += currentLen
 	}
 	copy(g.mem[dstStart:dstEnd], g.mem[srcStart:srcEnd])
 }
