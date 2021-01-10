@@ -28,3 +28,7 @@ form bigger freespaces. Gravity of free space is defined as
 <code>size(fs<sub>i</sub>) * size(fs<sub>i+1</sub>) / distance<sup>2</sup>(fs<sub>i</sub>, fs<sub>i+1</sub>)</code>
 
 where <code>size(fs<sub>i</sub>)</code> is the size of i-th free space
+
+### Future Ideas
+
+1. Try writing an in-memory cache on top of gravity.
