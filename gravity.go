@@ -10,7 +10,7 @@ import (
 )
 
 type Gravity struct {
-	rwm  sync.RWMutex
+	sync.RWMutex
 	mem  []byte            // Entire mem in bytes
 	fsm  *freeSpaceManager // Manages the free space
 	size uint64            // Total size of memory (same as len(mem))
@@ -52,17 +52,11 @@ func (g *Gravity) getKey() uint64 {
 // Write adds data to the memory and returns a key.
 // The key acts as a reference to read the data
 func (g *Gravity) Write(data []byte) (key uint64, err error) {
+	g.Lock()
+	defer g.Unlock()
 	key = g.getKey()
 	err = g.write(key, data)
 	return
-}
-
-// WriteWithKey writes data to the memory and associates the key to it.
-// The data can be read back by passing key to Read function
-func (g *Gravity) WriteWithKey(key uint64, data []byte) error {
-	// clear any key that is already present
-	_ = g.Free(key)
-	return g.write(key, data)
 }
 
 func (g *Gravity) write(k uint64, data []byte) error {
@@ -104,8 +98,8 @@ func (g *Gravity) write(k uint64, data []byte) error {
 
 // Reads the value stored in the position corresponding to the key
 func (g *Gravity) Read(key uint64) ([]byte, error) {
-	g.rwm.RLock()
-	defer g.rwm.RUnlock()
+	g.RLock()
+	defer g.RUnlock()
 	pos, err := g.loadFromVPos(key)
 	if err != nil {
 		return nil, err
@@ -125,16 +119,16 @@ func (g *Gravity) Read(key uint64) ([]byte, error) {
 
 // Frees the memory held by the data pointed by key
 func (g *Gravity) Free(key uint64) error {
-	g.rwm.RLock()
+	g.Lock()
 
 	pos, err := g.loadAndDeleteFromVPos(key)
 	if err != nil {
-		g.rwm.RUnlock()
+		g.Unlock()
 		return err
 	}
 
 	dl := binary.LittleEndian.Uint64(g.mem[pos : pos+headerLen])
-	g.rwm.RUnlock()
+	g.Unlock()
 
 	totalDataSize := headerLen + keyLen + dl
 	return g.fsm.add(&treap.FreeSpace{Start: pos, End: pos + totalDataSize - 1})
@@ -149,8 +143,6 @@ func (g *Gravity) TotalFreeSpace() uint64 {
 // by moving the data to the left
 func (g *Gravity) merge(fss []*treap.FreeSpace) *treap.FreeSpace {
 	// obtain lock as data is moved and vmap is updated
-	g.rwm.Lock()
-	defer g.rwm.Unlock()
 	for i := 0; i < len(fss)-1; i++ {
 		fs := fss[i]
 		nfs := fss[i+1]

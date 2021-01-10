@@ -91,26 +91,6 @@ func TestGravity_RWF(t *testing.T) {
 
 }
 
-func TestGravity_WriteWithKey(t *testing.T) {
-	g, _ := NewGravity(make([]byte, 100))
-	str := "hello"
-	k := uint64(3123)
-	err := g.WriteWithKey(k, []byte(str))
-	require.NoError(t, err)
-
-	data, err := g.Read(k)
-	require.NoError(t, err)
-	require.Equal(t, str, string(data))
-
-	str = "world"
-	err = g.WriteWithKey(k, []byte(str))
-	require.NoError(t, err)
-
-	data, err = g.Read(k)
-	require.NoError(t, err)
-	require.Equal(t, str, string(data))
-}
-
 func TestGravity_VPos(t *testing.T) {
 	inp := strings.Split("hello from the other side", " ")
 	totalSpaceRequired := uint64(0)

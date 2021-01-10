@@ -83,7 +83,7 @@ func TestTreapdelete(t *testing.T) {
 	dcount := len(data)
 	for d := range ch {
 		fs := &treap.FreeSpace{Start: d[0], End: d[1]}
-		t.Logf("Deleting %vmap\n", fs)
+		t.Logf("Deleting %v\n", fs)
 		tn := treap.NewNode(fs)
 		var dn *treap.Node
 		ts.root, dn = treap.Remove(ts.root, tn)
@@ -105,7 +105,7 @@ func TestTreapGet(t *testing.T) {
 	for _, tnode := range tnodes {
 		fs, err := ts.poolExtract(tnode[1] - tnode[0])
 		require.NoError(t, err)
-		t.Logf("Extracted %vmap \n", fs)
+		t.Logf("Extracted %v \n", fs)
 		fs[0].Start = fs[0].End + 1
 		go func() {
 			time.Sleep(1 * time.Second)
@@ -158,7 +158,7 @@ func TestTreapExtractMultiple(t *testing.T) {
 	for _, space := range fss {
 		totalSpaceExtracted += space.Size()
 	}
-	t.Logf("total space required: %vmap, extracted: %vmap [%vmap]\n", reqSize, totalSpaceExtracted, fss)
+	t.Logf("total space required: %v, extracted: %v [%v]\n", reqSize, totalSpaceExtracted, fss)
 	require.GreaterOrEqual(t, totalSpaceExtracted, reqSize)
 }
 
@@ -215,7 +215,7 @@ func getDeletionOrder(data [][]uint64, ch chan []uint64) {
 //		_ = ts.add(f)
 //	}
 //	b.StopTimer()
-//	b.Logf("Nodes: %vmap, Height: %vmap\n", b.N, ts.height(ts.root))
+//	b.Logf("Nodes: %v, Height: %v\n", b.N, ts.height(ts.root))
 //}
 
 func verifyTotalFreeSpace(t *testing.T, testData [][]uint64, ts *freeSpaceManager) {
