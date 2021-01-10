@@ -1,12 +1,9 @@
 package gravity
 
-import "sync"
-
 // maxBucket to shard the keys. should be a power of 2
 const maxBucket = 0x20
 
 type shard struct {
-	sync.RWMutex
 	m map[uint64]uint64
 }
 
@@ -32,8 +29,6 @@ func bucketIdx(key uint64) int {
 func (v *vmap) store(key uint64, value uint64) {
 	index := bucketIdx(key)
 	if silo, ok := v.bucket[index]; ok {
-		//silo.Lock()
-		//defer silo.Unlock()
 		silo.m[key] = value
 	}
 }
@@ -42,8 +37,6 @@ func (v *vmap) store(key uint64, value uint64) {
 func (v *vmap) load(key uint64) (uint64, bool) {
 	index := bucketIdx(key)
 	if silo, ok := v.bucket[index]; ok {
-		//silo.RLock()
-		//defer silo.RUnlock()
 		val, ok := silo.m[key]
 		return val, ok
 	}
@@ -53,8 +46,6 @@ func (v *vmap) load(key uint64) (uint64, bool) {
 func (v *vmap) loadAndDelete(key uint64) (uint64, bool) {
 	index := bucketIdx(key)
 	if silo, ok := v.bucket[index]; ok {
-		//silo.Lock()
-		//defer silo.Unlock()
 		val, ok := silo.m[key]
 		if ok {
 			delete(silo.m, key)
