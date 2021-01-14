@@ -65,13 +65,16 @@ func (g *Gravity) write(k uint64, data []byte) error {
 	dl := uint64(len(data))
 	totalLen := headerLen + keyLen + dl
 
-	// try to fetch freespace for size
-	fss, err := g.fsm.poolExtract(totalLen)
-	if err != nil {
-		return err
-	}
+	fss, err := g.fsm.poolExtractSingle(totalLen)
+	if err == NotEnoughSpace {
+		// try to fetch freespace for size
+		fss, err = g.fsm.poolExtract(totalLen)
+		if err != nil {
+			return err
+		}
 
-	// merge all freespaces to satisfy the data size
+		// merge all freespaces to satisfy the data size
+	}
 	fs := g.merge(fss)
 
 	// remember to put the freespace back to the pool

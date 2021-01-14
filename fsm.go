@@ -48,6 +48,34 @@ func (t *freeSpaceManager) add(fs *treap.FreeSpace) error {
 	return nil
 }
 
+func (t *freeSpaceManager) poolExtractSingle(size uint64) ([]*treap.FreeSpace, error) {
+	t.Lock()
+
+	expectedNodeSize := size
+	// wait till the root size is not met and there are in-use free space
+	if t.root == nil || t.root.Size() < expectedNodeSize {
+		t.Unlock()
+		return nil, NotEnoughSpace
+	}
+
+	fss := t.extractNodes(size, expectedNodeSize)
+	t.Unlock()
+	return fss, nil
+}
+
+func (t *freeSpaceManager) extractNodes(size uint64, expectedNodeSize uint64) []*treap.FreeSpace {
+	// Get max gravity node
+	node := treap.GreatestGravityNode(t.root, expectedNodeSize)
+	defer treap.NodePool.Put(node)
+	fss, nr, extractedSize := treap.GetFittingNeighbours(t.root, node, size)
+	// update the root
+	t.root = nr
+	t.totalFreeSpace -= extractedSize
+	// inform that a fs has been pulled out
+	t.extractedFreeSpaces += 1
+	return fss
+}
+
 func (t *freeSpaceManager) poolExtract(size uint64) ([]*treap.FreeSpace, error) {
 	t.Lock()
 
@@ -65,15 +93,8 @@ func (t *freeSpaceManager) poolExtract(size uint64) ([]*treap.FreeSpace, error) 
 		expectedNodeSize = 0
 	}
 
-	// Get max gravity node
-	node := treap.GreatestGravityNode(t.root, expectedNodeSize)
-	defer treap.NodePool.Put(node)
-	fss, nr, extractedSize := treap.GetFittingNeighbours(t.root, node, size)
-	// update the root
-	t.root = nr
-	t.totalFreeSpace -= extractedSize
-	// inform that a fs has been pulled out
-	t.extractedFreeSpaces += 1
+	fss := t.extractNodes(size, expectedNodeSize)
+
 	t.Unlock()
 	return fss, nil
 }
