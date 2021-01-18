@@ -29,6 +29,8 @@ form bigger freespaces. Gravity of free space is defined as
 
 where <code>size(fs<sub>i</sub>)</code> is the size of i-th free space
 
+[Read this post for more info](https://nnanto.medium.com/gravity-the-allocator-d443f970123e)
+
 ### Future Ideas
 
 1. Try writing an in-memory cache on top of gravity.
